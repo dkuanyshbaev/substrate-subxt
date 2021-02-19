@@ -3,7 +3,7 @@ members = [".", "client", "proc-macro"]
 
 [package]
 name = "substrate-subxt"
-version = "0.13.0"
+version = "0.14.0"
 authors = ["Parity Technologies <admin@parity.io>"]
 edition = "2018"
 
@@ -32,7 +32,11 @@ num-traits = { version = "0.2.14", default-features = false }
 serde = { version = "1.0.119", features = ["derive"] }
 serde_json = "1.0.61"
 url = "2.2.0"
-codec = { package = "parity-scale-codec", version = "1.3.6", default-features = false, features = ["derive", "full"] }
+codec = { package = "parity-scale-codec", version = "2.0.0", default-features = false, features = ["derive", "full"] }
+# temporarily pinning funty via codec -> bitvec until https://github.com/myrrlyn/funty/issues/3
+# and https://github.com/bitvecto-rs/bitvec/issues/105 are resolved
+funty = "=1.1.0"
+dyn-clone = "1.0.4"
 
 frame-metadata = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "frame-metadata" }
 frame-support = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "frame-support" }
@@ -46,8 +50,8 @@ pallet-staking = { git = "https://github.com/paritytech/substrate", branch = "ro
 
 sp-rpc = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "sp-rpc" }
 sp-core = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "sp-core" }
-substrate-subxt-client = { version = "0.5.0", path = "client", optional = true }
-substrate-subxt-proc-macro = { version = "0.13.0", path = "proc-macro" }
+substrate-subxt-client = { version = "0.6.0", path = "client", optional = true }
+substrate-subxt-proc-macro = { version = "0.14.0", path = "proc-macro" }
 
 [dev-dependencies]
 async-std = { version = "1.8.0", features = ["attributes"] }
@@ -55,7 +59,7 @@ env_logger = "0.8.2"
 frame-system = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "frame-system" }
 pallet-balances = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "pallet-balances" }
 sp-keyring = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "sp-keyring" }
-substrate-subxt-client = { version = "0.5.0", path = "client" }
+substrate-subxt-client = { version = "0.6.0", path = "client" }
 tempdir = "0.3.7"
 wabt = "0.10.0"
 assert_matches = "1.4.0"

@@ -1,4 +1,4 @@
-// Copyright 2019-2020 Parity Technologies (UK) Ltd.
+// Copyright 2019-2021 Parity Technologies (UK) Ltd.
 // This file is part of substrate-subxt.
 //
 // subxt is free software: you can redistribute it and/or modify
@@ -16,10 +16,7 @@
 
 //! Implements support for the pallet_staking module.
 
-use super::balances::{
-    Balances,
-    BalancesEventsDecoder as _,
-};
+use super::balances::Balances;
 use codec::{
     Decode,
     Encode,
@@ -64,7 +61,11 @@ pub struct SetPayeeCall<T: Staking> {
 
 /// The subset of the `frame::Trait` that a client must implement.
 #[module]
-pub trait Staking: Balances {}
+#[rustfmt::skip]
+pub trait Staking: Balances {
+    #![event_alias(ElectionCompute = u8)]
+    #![event_type(EraIndex)]
+}
 
 /// Number of eras to keep in history.
 ///

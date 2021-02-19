@@ -1,6 +1,6 @@
 [package]
 name = "substrate-subxt-client"
-version = "0.5.0"
+version = "0.6.0"
 authors = ["David Craven <david@craven.ch>", "Parity Technologies <admin@parity.io>"]
 edition = "2018"
 
@@ -19,6 +19,7 @@ jsonrpsee = "0.1.0"
 log = "0.4.13"
 sc-network = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", default-features = false }
 sc-service = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", default-features = false }
+sc-client-db = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1" }
 serde_json = "1.0.61"
 sp-keyring = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1"}
 thiserror = "1.0.23"
