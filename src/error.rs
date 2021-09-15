@@ -14,21 +14,20 @@
 // You should have received a copy of the GNU General Public License
 // along with substrate-subxt.  If not, see <http://www.gnu.org/licenses/>.
 
-use jsonrpsee::{
-    client::RequestError,
-    transport::ws::WsNewDnsError,
+use crate::{
+    metadata::{
+        InvalidMetadataError,
+        MetadataError,
+    },
+    Metadata,
 };
+use jsonrpsee_types::Error as RequestError;
 use sp_core::crypto::SecretStringError;
 use sp_runtime::{
     transaction_validity::TransactionValidityError,
     DispatchError,
 };
 use thiserror::Error;
-
-use crate::metadata::{
-    Metadata,
-    MetadataError,
-};
 
 /// Error enum.
 #[derive(Debug, Error)]
@@ -42,9 +41,6 @@ pub enum Error {
     /// Rpc error.
     #[error("Rpc error: {0}")]
     Rpc(#[from] RequestError),
-    /// Error that can happen during the initial websocket handshake
-    #[error("Rpc error: {0}")]
-    WsHandshake(#[from] WsNewDnsError),
     /// Serde serialization error
     #[error("Serde json error: {0}")]
     Serialization(#[from] serde_json::error::Error),
@@ -54,19 +50,12 @@ pub enum Error {
     /// Extrinsic validity error
     #[error("Transaction Validity Error: {0:?}")]
     Invalid(TransactionValidityError),
-    /// Metadata error.
-    #[error("Metadata error: {0}")]
+    /// Invalid metadata error
+    #[error("Invalid Metadata: {0}")]
+    InvalidMetadata(#[from] InvalidMetadataError),
+    /// Invalid metadata error
+    #[error("Metadata: {0}")]
     Metadata(#[from] MetadataError),
-    /// Unregistered type sizes.
-    #[error(
-        "The following types do not have a type size registered: \
-            {0:?} \
-         Use `ClientBuilder::register_type_size` to register missing type sizes."
-    )]
-    MissingTypeSizes(Vec<String>),
-    /// Type size unavailable.
-    #[error("Type size unavailable while decoding event: {0:?}")]
-    TypeSizeUnavailable(String),
     /// Runtime error.
     #[error("Runtime error: {0}")]
     Runtime(#[from] RuntimeError),
@@ -134,18 +123,21 @@ impl RuntimeError {
                 error,
                 message: _,
             } => {
-                let module = metadata.module_with_errors(index)?;
-                let error = module.error(error)?;
-                Ok(Self::Module(ModuleError {
-                    module: module.name().to_string(),
-                    error: error.to_string(),
-                }))
+                todo!()
+                // let module = metadata.module_with_errors(index)?;
+                // let error = module.error(error)?;
+                // Ok(Self::Module(ModuleError {
+                //     module: module.name().to_string(),
+                //     error: error.to_string(),
+                // }))
             }
             DispatchError::BadOrigin => Ok(Self::BadOrigin),
             DispatchError::CannotLookup => Ok(Self::CannotLookup),
             DispatchError::ConsumerRemaining => Ok(Self::ConsumerRemaining),
             DispatchError::NoProviders => Ok(Self::NoProviders),
             DispatchError::Other(msg) => Ok(Self::Other(msg.into())),
+            DispatchError::Token(_) => todo!(),
+            DispatchError::Arithmetic(_) => todo!(),
         }
     }
 }
@@ -154,6 +146,8 @@ impl RuntimeError {
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 #[error("{error} from {module}")]
 pub struct ModuleError {
+    /// The module where the error originated.
     pub module: String,
+    /// The actual error code.
     pub error: String,
 }

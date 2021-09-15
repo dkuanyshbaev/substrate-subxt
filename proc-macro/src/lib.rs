@@ -16,144 +16,38 @@
 
 extern crate proc_macro;
 
-mod call;
-mod event;
-mod module;
-mod store;
-mod test;
-mod utils;
+mod generate_runtime;
+mod generate_types;
 
-use proc_macro::TokenStream;
-use proc_macro_error::proc_macro_error;
-use synstructure::{
-    decl_derive,
-    Structure,
+use darling::FromMeta;
+use generate_types::{
+    TypeGenerator,
+    TypePath,
 };
+use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
+use proc_macro_error::proc_macro_error;
+use syn::parse_macro_input;
 
-/// Register type sizes for [EventsDecoder](struct.EventsDecoder.html) and set the `MODULE`.
-///
-/// The `module` macro registers the type sizes of the associated types of a trait so that [EventsDecoder](struct.EventsDecoder.html)
-/// can decode events of that type when received from Substrate. It also sets the `MODULE` constant
-/// to the name of the trait (must match the name of the Substrate pallet) that enables the [Call](), [Event]() and [Store]() macros to work.
-///
-/// If you do not want an associated type to be registered, likely because you never expect it as part of a response payload to be decoded, use `#[module(ignore)]` on the type.
-///
-/// Example:
-///
-/// ```ignore
-/// #[module]
-/// pub trait Herd: Husbandry {
-///     type Hooves: HoofCounter;
-///     type Wool: WoollyAnimal;
-///     #[module(ignore)]
-///     type Digestion: EnergyProducer + std::fmt::Debug;
-/// }
-/// ```
-///
-/// The above will produce the following code:
-///
-/// ```ignore
-/// pub trait Herd: Husbandry {
-///     type Hooves: HoofCounter;
-///     type Wool: WoollyAnimal;
-///     #[module(ignore)]
-///     type Digestion: EnergyProducer + std::fmt::Debug;
-/// }
-///
-/// const MODULE: &str = "Herd";
-///
-/// // `EventTypeRegistry` extension trait.
-/// pub trait HerdEventTypeRegistry {
-///     // Registers this modules types.
-///     fn with_herd(&mut self);
-/// }
-///
-/// impl<T: Herd + Runtime> EventTypeRegistry for
-///     substrate_subxt::EventTypeRegistry<T>
-/// {
-///     fn with_herd(&mut self) {
-///         self.register_type_size::<T::Hooves>("Hooves");
-///         self.register_type_size::<T::Wool>("Wool");
-///     }
-/// }
-/// ```
-///
-/// The following type sizes are registered by default: `bool, u8, u32, AccountId, AccountIndex,
-/// AuthorityId, AuthorityIndex, AuthorityWeight, BlockNumber, DispatchInfo, Hash, Kind,
-/// MemberCount, PhantomData, PropIndex, ProposalIndex, ReferendumIndex, SessionIndex, VoteThreshold`
+#[derive(Debug, FromMeta)]
+struct RuntimeMetadataArgs {
+    runtime_metadata_path: String,
+}
+
 #[proc_macro_attribute]
 #[proc_macro_error]
-pub fn module(args: TokenStream, input: TokenStream) -> TokenStream {
-    module::module(args.into(), input.into()).into()
-}
+pub fn subxt(args: TokenStream, input: TokenStream) -> TokenStream {
+    let attr_args = parse_macro_input!(args as syn::AttributeArgs);
+    let item_mod = parse_macro_input!(input as syn::ItemMod);
 
-decl_derive!(
-    [Call] =>
-    /// Derive macro that implements [substrate_subxt::Call](../substrate_subxt/trait.Call.html) for your struct
-    /// and defines&implements the calls as an extension trait.
-    ///
-    /// Use the `Call` derive macro in tandem with the [#module](../substrate_subxt/attr.module.html) macro to extend
-    /// your struct to enable calls to substrate and to decode events. The struct maps to the corresponding Substrate runtime call, e.g.:
-    ///
-    /// ```ignore
-    /// decl_module! {
-    ///     /* … */
-    ///     pub fn fun_stuff(origin, something: Vec<u8>) -> DispatchResult { /* … */ }
-    ///     /* … */
-    /// }
-    ///```
-    ///
-    /// Implements [substrate_subxt::Call](../substrate_subxt/trait.Call.html) and adds an extension trait that
-    /// provides two methods named as your struct.
-    ///
-    /// Example:
-    /// ```rust,ignore
-    /// pub struct MyRuntime;
-    ///
-    /// impl System for MyRuntime { /* … */ }
-    /// impl Balances for MyRuntime { /* … */ }
-    ///
-    /// #[module]
-    /// pub trait MyTrait: System + Balances {}
-    ///
-    /// #[derive(Call)]
-    /// pub struct FunStuffCall<T: MyTrait> {
-    ///     /// Runtime marker.
-    ///     pub _runtime: PhantomData<T>,
-    ///     /// The argument passed to the call..
-    ///     pub something: Vec<u8>,
-    /// }
-    /// ```
-    ///
-    /// When building a [Client](../substrate_subxt/struct.Client.html) parameterised to `MyRuntime`, you have access to
-    /// two new methods: `fun_stuff()` and `fun_stuff_and_watch()` by way of the derived `FunStuffExt`
-    /// trait. The `_and_watch` variant makes the call and waits for the result. The fields of the
-    /// input struct become arguments to the calls (ignoring the marker field).
-    ///
-    /// Under the hood the implementation calls [submit()](../substrate_subxt/struct.Client.html#method.submit) and
-    /// [watch()](../substrate_subxt/struct.Client.html#method.watch) respectively.
-    ///
-    /// *N.B.* You must use the `#[derive(Call)]` macro with `#[module]` in the same module or you will get errors
-    /// about undefined method with a name starting with `with_`.
+    let args = match RuntimeMetadataArgs::from_list(&attr_args) {
+        Ok(v) => v,
+        Err(e) => return TokenStream::from(e.write_errors()),
+    };
 
-    #[proc_macro_error] call
-);
-fn call(s: Structure) -> TokenStream {
-    call::call(s).into()
-}
+    let root = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
+    let root_path = std::path::Path::new(&root);
+    let path = root_path.join(args.runtime_metadata_path);
 
-decl_derive!([Event] => #[proc_macro_error] event);
-fn event(s: Structure) -> TokenStream {
-    event::event(s).into()
-}
-
-decl_derive!([Store, attributes(store)] => #[proc_macro_error] store);
-fn store(s: Structure) -> TokenStream {
-    store::store(s).into()
-}
-
-#[proc_macro]
-#[proc_macro_error]
-pub fn subxt_test(input: TokenStream) -> TokenStream {
-    test::test(input.into()).into()
+    generate_runtime::generate_runtime_types(item_mod, &path).into()
 }

@@ -22,8 +22,8 @@ mod signer;
 pub use self::{
     extra::{
         ChargeTransactionPayment,
-        CheckEra,
         CheckGenesis,
+        CheckMortality,
         CheckNonce,
         CheckSpecVersion,
         CheckTxVersion,
@@ -42,15 +42,14 @@ use sp_runtime::traits::SignedExtension;
 use sp_version::RuntimeVersion;
 
 use crate::{
-    frame::system::System,
-    runtimes::Runtime,
     Encoded,
     Error,
+    Runtime,
 };
 
 /// UncheckedExtrinsic type.
 pub type UncheckedExtrinsic<T> = sp_runtime::generic::UncheckedExtrinsic<
-    <T as System>::Address,
+    <T as Runtime>::Address,
     Encoded,
     <T as Runtime>::Signature,
     Extra<T>,

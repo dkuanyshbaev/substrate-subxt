@@ -1,9 +1,9 @@
 [workspace]
-members = [".", "client", "proc-macro"]
+members = [".", "proc-macro", "tests"]
 
 [package]
 name = "substrate-subxt"
-version = "0.14.0"
+version = "0.15.0"
 authors = ["Parity Technologies <admin@parity.io>"]
 edition = "2018"
 
@@ -17,49 +17,35 @@ keywords = ["parity", "substrate", "blockchain"]
 include = ["Cargo.toml", "src/**/*.rs", "README.md", "LICENSE"]
 
 [features]
-default = []
-client = ["substrate-subxt-client"]
-
-# enable this feature to run tests which require a local dev chain node
-integration-tests = []
+default = ["tokio1"]
+# jsonrpsee can be configured to use tokio02 or tokio1.
+tokio02 = ["jsonrpsee-http-client/tokio02", "jsonrpsee-ws-client/tokio02"]
+tokio1 = ["jsonrpsee-http-client/tokio1", "jsonrpsee-ws-client/tokio1"]
 
 [dependencies]
-log = "0.4.13"
-thiserror = "1.0.23"
-futures = "0.3.10"
-jsonrpsee = { version = "0.1.0", features = ["ws"] }
+async-trait = "0.1.49"
+codec = { package = "parity-scale-codec", version = "2", default-features = false, features = ["derive", "full"] }
+chameleon = "0.1.0"
+scale-info = "1.0.0"
+dyn-clone = "1.0.3"
+futures = "0.3.13"
+hex = "0.4.3"
+jsonrpsee-proc-macros = "0.3.0"
+jsonrpsee-ws-client = { version = "0.3.0", default-features = false }
+jsonrpsee-http-client = { version = "0.3.0", default-features = false }
+jsonrpsee-types = "0.3.0"
+log = "0.4.14"
 num-traits = { version = "0.2.14", default-features = false }
-serde = { version = "1.0.119", features = ["derive"] }
-serde_json = "1.0.61"
-url = "2.2.0"
-codec = { package = "parity-scale-codec", version = "2.0.0", default-features = false, features = ["derive", "full"] }
-# temporarily pinning funty via codec -> bitvec until https://github.com/myrrlyn/funty/issues/3
-# and https://github.com/bitvecto-rs/bitvec/issues/105 are resolved
-funty = "=1.1.0"
-dyn-clone = "1.0.4"
+serde = { version = "1.0.124", features = ["derive"] }
+serde_json = "1.0.64"
+thiserror = "1.0.24"
+url = "2.2.1"
 
-frame-metadata = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "frame-metadata" }
-frame-support = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "frame-support" }
-sp-runtime = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "sp-runtime" }
-sp-version = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "sp-version" }
-pallet-indices = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "pallet-indices" }
-hex = "0.4.2"
-sp-std = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1" }
-application-crypto = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "sp-application-crypto" }
-pallet-staking = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1" }
+subxt-proc-macro = { version = "0.1.0", path = "proc-macro" }
 
-sp-rpc = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "sp-rpc" }
-sp-core = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "sp-core" }
-substrate-subxt-client = { version = "0.6.0", path = "client", optional = true }
-substrate-subxt-proc-macro = { version = "0.14.0", path = "proc-macro" }
+sp-core = { package = "sp-core", git = "https://github.com/paritytech/substrate/" }
+sp-rpc = { package = "sp-rpc", git = "https://github.com/paritytech/substrate/" }
+sp-runtime = { package = "sp-runtime", git = "https://github.com/paritytech/substrate/" }
+sp-version = { package = "sp-version", git = "https://github.com/paritytech/substrate/" }
 
-[dev-dependencies]
-async-std = { version = "1.8.0", features = ["attributes"] }
-env_logger = "0.8.2"
-frame-system = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "frame-system" }
-pallet-balances = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "pallet-balances" }
-sp-keyring = { git = "https://github.com/paritytech/substrate", branch = "rococo-v1", package = "sp-keyring" }
-substrate-subxt-client = { version = "0.6.0", path = "client" }
-tempdir = "0.3.7"
-wabt = "0.10.0"
-assert_matches = "1.4.0"
+frame-metadata = "14.0.0"

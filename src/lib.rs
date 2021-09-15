@@ -41,10 +41,7 @@
 #![allow(clippy::type_complexity)]
 
 #[macro_use]
-extern crate substrate_subxt_proc_macro;
-
-#[cfg(feature = "client")]
-pub use substrate_subxt_client as client;
+extern crate subxt_proc_macro;
 
 pub use sp_core;
 pub use sp_runtime;
@@ -52,34 +49,39 @@ pub use sp_runtime;
 use codec::{
     Codec,
     Decode,
+    Encode,
+    EncodeLike,
 };
-use futures::future;
-use jsonrpsee::client::Subscription;
-use sp_core::{
-    storage::{
-        StorageChangeSet,
-        StorageData,
-        StorageKey,
-    },
-    Bytes,
+use serde::de::DeserializeOwned;
+use std::{
+    fmt::Debug,
+    marker::PhantomData,
+    sync::Arc,
 };
-pub use sp_runtime::traits::SignedExtension;
-pub use sp_version::RuntimeVersion;
-use std::marker::PhantomData;
 
+mod client;
 mod error;
 mod events;
 pub mod extrinsic;
-mod frame;
 mod metadata;
 mod rpc;
-mod runtimes;
 mod subscription;
 
+use crate::rpc::{
+    ChainBlock,
+    Rpc,
+};
 pub use crate::{
-    error::Error,
+    client::{
+        Client,
+        ClientBuilder,
+    },
+    error::{
+        Error,
+        ModuleError,
+        RuntimeError,
+    },
     events::{
-        EventTypeRegistry,
         EventsDecoder,
         RawEvent,
     },
@@ -89,521 +91,211 @@ pub use crate::{
         Signer,
         UncheckedExtrinsic,
     },
-    frame::*,
-    metadata::{
-        Metadata,
-        MetadataError,
-    },
+    metadata::Metadata,
     rpc::{
         BlockNumber,
         ExtrinsicSuccess,
         ReadProof,
+        RpcClient,
         SystemProperties,
     },
-    runtimes::*,
-    subscription::*,
-    substrate_subxt_proc_macro::*,
-};
-use crate::{
-    frame::system::{
-        AccountStoreExt,
-        Phase,
-        System,
-    },
-    rpc::{
-        ChainBlock,
-        Rpc,
+    subscription::{
+        EventStorageSubscription,
+        EventSubscription,
+        FinalizedEventStorageSubscription,
     },
 };
+pub use frame_metadata::StorageHasher;
+pub use subxt_proc_macro::subxt;
 
-/// ClientBuilder for constructing a Client.
-#[derive(Default)]
-pub struct ClientBuilder<T: Runtime> {
-    url: Option<String>,
-    client: Option<jsonrpsee::Client>,
-    page_size: Option<u32>,
-    event_type_registry: EventTypeRegistry<T>,
-    skip_type_sizes_check: bool,
+use sp_runtime::traits::{
+    AtLeast32Bit,
+    Extrinsic,
+    Hash,
+    Header,
+    MaybeSerializeDeserialize,
+    Member,
+    Verify,
+};
+
+/// Parameter trait compied from substrate::frame_support
+pub trait Parameter: Codec + EncodeLike + Clone + Eq + std::fmt::Debug {}
+impl<T> Parameter for T where T: Codec + EncodeLike + Clone + Eq + std::fmt::Debug {}
+
+/// Runtime types.
+pub trait Runtime: Clone + Sized + Send + Sync + 'static {
+    /// Account index (aka nonce) type. This stores the number of previous
+    /// transactions associated with a sender account.
+    type Index: Parameter
+        + Member
+        + Default
+        // + MaybeDisplay
+        + AtLeast32Bit
+        + Copy;
+
+    /// The block number type used by the runtime.
+    type BlockNumber: Parameter
+        + Member
+        // + MaybeMallocSizeOf
+        // + MaybeSerializeDeserialize
+        // + Debug
+        // + MaybeDisplay
+        // + AtLeast32BitUnsigned
+        + Default
+        // + Bounded
+        + Copy
+        + std::hash::Hash
+        + std::str::FromStr;
+
+    /// The output of the `Hashing` function.
+    type Hash: Parameter
+        + Member
+        + MaybeSerializeDeserialize
+        + Ord
+        + Default
+        + Copy
+        + std::hash::Hash
+        + AsRef<[u8]>
+        + AsMut<[u8]>;
+
+    /// The hashing system (algorithm) being used in the runtime (e.g. Blake2).
+    type Hashing: Hash<Output = Self::Hash>;
+
+    /// The user account identifier type for the runtime.
+    type AccountId: Parameter + Member; // + MaybeSerialize + MaybeDisplay + Ord + Default;
+
+    /// The address type. This instead of `<frame_system::Trait::Lookup as StaticLookup>::Source`.
+    type Address: Codec + Clone + PartialEq;
+    // + Debug + Send + Sync;
+
+    /// Data to be associated with an account (other than nonce/transaction counter, which this
+    /// pallet does regardless).
+    type AccountData: AccountData<Self>;
+
+    /// The block header.
+    type Header: Parameter
+        + Header<Number = Self::BlockNumber, Hash = Self::Hash>
+        + DeserializeOwned;
+
+    /// Transaction extras.
+    type Extra: SignedExtra<Self> + Send + Sync + 'static;
+
+    /// Signature type.
+    type Signature: Verify + Encode + Send + Sync + 'static;
+
+    /// Extrinsic type within blocks.
+    type Extrinsic: Parameter + Extrinsic + Debug + MaybeSerializeDeserialize;
 }
 
-impl<T: Runtime> ClientBuilder<T> {
-    /// Creates a new ClientBuilder.
-    pub fn new() -> Self {
+/// Trait to fetch data about an account.
+pub trait AccountData<T: Runtime>: StorageEntry {
+    /// Construct a storage entry type with the account id for the key.
+    fn new(account_id: T::AccountId) -> Self;
+
+    /// Get the nonce from the storage entry value.
+    fn nonce(result: &<Self as StorageEntry>::Value) -> T::Index;
+}
+
+/// Call trait.
+pub trait Call: Encode {
+    /// Pallet name.
+    const PALLET: &'static str;
+    /// Function name.
+    const FUNCTION: &'static str;
+}
+
+/// Event trait.
+pub trait Event: Decode {
+    /// Pallet name.
+    const PALLET: &'static str;
+    /// Event name.
+    const EVENT: &'static str;
+}
+
+/// Storage entry trait.
+pub trait StorageEntry {
+    /// Pallet name.
+    const PALLET: &'static str;
+    /// Storage name.
+    const STORAGE: &'static str;
+    /// Type of the storage entry value.
+    type Value: Decode;
+    /// Get the key data for the storage.
+    fn key(&self) -> StorageEntryKey;
+}
+
+/// Storage key.
+pub enum StorageEntryKey {
+    /// Plain key.
+    Plain,
+    /// Map key(s).
+    Map(Vec<StorageMapKey>),
+}
+
+impl StorageEntryKey {
+    /// Construct the final [`sp_core::storage::StorageKey`] for the storage entry.
+    pub fn final_key<T: StorageEntry>(&self) -> sp_core::storage::StorageKey {
+        let mut bytes = sp_core::twox_128(T::PALLET.as_bytes()).to_vec();
+        bytes.extend(&sp_core::twox_128(T::STORAGE.as_bytes())[..]);
+        if let Self::Map(map_keys) = self {
+            for map_key in map_keys {
+                bytes.extend(Self::hash(&map_key.hasher, &map_key.value))
+            }
+        }
+        sp_core::storage::StorageKey(bytes)
+    }
+
+    fn hash(hasher: &StorageHasher, bytes: &[u8]) -> Vec<u8> {
+        match hasher {
+            StorageHasher::Identity => bytes.to_vec(),
+            StorageHasher::Blake2_128 => sp_core::blake2_128(bytes).to_vec(),
+            StorageHasher::Blake2_128Concat => {
+                // copied from substrate Blake2_128Concat::hash since StorageHasher is not public
+                sp_core::blake2_128(bytes)
+                    .iter()
+                    .chain(bytes)
+                    .cloned()
+                    .collect()
+            }
+            StorageHasher::Blake2_256 => sp_core::blake2_256(bytes).to_vec(),
+            StorageHasher::Twox128 => sp_core::twox_128(bytes).to_vec(),
+            StorageHasher::Twox256 => sp_core::twox_256(bytes).to_vec(),
+            StorageHasher::Twox64Concat => {
+                sp_core::twox_64(bytes)
+                    .iter()
+                    .chain(bytes)
+                    .cloned()
+                    .collect()
+            }
+        }
+    }
+}
+
+/// Storage key for a Map.
+pub struct StorageMapKey {
+    value: Vec<u8>,
+    hasher: StorageHasher,
+}
+
+impl StorageMapKey {
+    /// Create a new [`StorageMapKey`] with the encoded data and the hasher.
+    pub fn new<T: Encode>(value: &T, hasher: StorageHasher) -> Self {
         Self {
-            url: None,
-            client: None,
-            page_size: None,
-            event_type_registry: EventTypeRegistry::new(),
-            skip_type_sizes_check: false,
-        }
-    }
-
-    /// Sets the jsonrpsee client.
-    pub fn set_client<P: Into<jsonrpsee::Client>>(mut self, client: P) -> Self {
-        self.client = Some(client.into());
-        self
-    }
-
-    /// Set the substrate rpc address.
-    pub fn set_url<P: Into<String>>(mut self, url: P) -> Self {
-        self.url = Some(url.into());
-        self
-    }
-
-    /// Set the page size.
-    pub fn set_page_size(mut self, size: u32) -> Self {
-        self.page_size = Some(size);
-        self
-    }
-
-    /// Register a custom type segmenter, for consuming types in events where the size cannot
-    /// be inferred from the metadata.
-    ///
-    /// # Panics
-    ///
-    /// If there is already a type size registered with this name.
-    pub fn register_type_size<U>(mut self, name: &str) -> Self
-    where
-        U: Codec + Send + Sync + 'static,
-    {
-        self.event_type_registry.register_type_size::<U>(name);
-        self
-    }
-
-    /// Disable the check for missing type sizes on `build`.
-    ///
-    /// *WARNING* can lead to runtime errors if receiving events with unknown types.
-    pub fn skip_type_sizes_check(mut self) -> Self {
-        self.skip_type_sizes_check = false;
-        self
-    }
-
-    /// Creates a new Client.
-    pub async fn build<'a>(self) -> Result<Client<T>, Error> {
-        let client = if let Some(client) = self.client {
-            client
-        } else {
-            let url = self.url.as_deref().unwrap_or("ws://127.0.0.1:9944");
-            if url.starts_with("ws://") || url.starts_with("wss://") {
-                jsonrpsee::ws_client(url).await?
-            } else {
-                jsonrpsee::http_client(url)
-            }
-        };
-        let rpc = Rpc::new(client);
-        let (metadata, genesis_hash, runtime_version, properties) = future::join4(
-            rpc.metadata(),
-            rpc.genesis_hash(),
-            rpc.runtime_version(None),
-            rpc.system_properties(),
-        )
-        .await;
-        let metadata = metadata?;
-
-        if let Err(missing) = self.event_type_registry.check_missing_type_sizes(&metadata)
-        {
-            if self.skip_type_sizes_check {
-                log::warn!(
-                    "The following types do not have registered type segmenters: {:?} \
-                    If any events containing these types are received, this can cause a \
-                    `TypeSizeUnavailable` error and prevent decoding the actual event \
-                    being listened for.\
-                    \
-                    Use `ClientBuilder::register_type_size` to register missing type sizes.",
-                    missing
-                );
-            } else {
-                return Err(Error::MissingTypeSizes(missing.into_iter().collect()))
-            }
-        }
-
-        let events_decoder =
-            EventsDecoder::new(metadata.clone(), self.event_type_registry);
-
-        Ok(Client {
-            rpc,
-            genesis_hash: genesis_hash?,
-            metadata,
-            events_decoder,
-            properties: properties.unwrap_or_else(|_| Default::default()),
-            runtime_version: runtime_version?,
-            _marker: PhantomData,
-            page_size: self.page_size.unwrap_or(10),
-        })
-    }
-}
-
-/// Client to interface with a substrate node.
-pub struct Client<T: Runtime> {
-    rpc: Rpc<T>,
-    genesis_hash: T::Hash,
-    metadata: Metadata,
-    events_decoder: EventsDecoder<T>,
-    properties: SystemProperties,
-    runtime_version: RuntimeVersion,
-    _marker: PhantomData<(fn() -> T::Signature, T::Extra)>,
-    page_size: u32,
-}
-
-impl<T: Runtime> Clone for Client<T> {
-    fn clone(&self) -> Self {
-        Self {
-            rpc: self.rpc.clone(),
-            genesis_hash: self.genesis_hash,
-            metadata: self.metadata.clone(),
-            events_decoder: self.events_decoder.clone(),
-            properties: self.properties.clone(),
-            runtime_version: self.runtime_version.clone(),
-            _marker: PhantomData,
-            page_size: self.page_size,
+            value: value.encode(),
+            hasher,
         }
     }
 }
 
-/// Iterates over key value pairs in a map.
-pub struct KeyIter<T: Runtime, F: Store<T>> {
-    client: Client<T>,
-    _marker: PhantomData<F>,
-    count: u32,
-    hash: T::Hash,
-    start_key: Option<StorageKey>,
-    buffer: Vec<(StorageKey, StorageData)>,
-}
-
-impl<T: Runtime, F: Store<T>> KeyIter<T, F> {
-    /// Returns the next key value pair from a map.
-    pub async fn next(&mut self) -> Result<Option<(StorageKey, F::Returns)>, Error> {
-        loop {
-            if let Some((k, v)) = self.buffer.pop() {
-                return Ok(Some((k, Decode::decode(&mut &v.0[..])?)))
-            } else {
-                let keys = self
-                    .client
-                    .fetch_keys::<F>(self.count, self.start_key.take(), Some(self.hash))
-                    .await?;
-
-                if keys.is_empty() {
-                    return Ok(None)
-                }
-
-                self.start_key = keys.last().cloned();
-
-                let change_sets = self
-                    .client
-                    .rpc
-                    .query_storage_at(&keys, Some(self.hash))
-                    .await?;
-                for change_set in change_sets {
-                    for (k, v) in change_set.changes {
-                        if let Some(v) = v {
-                            self.buffer.push((k, v));
-                        }
-                    }
-                }
-                debug_assert_eq!(self.buffer.len(), keys.len());
-            }
-        }
-    }
-}
-
-impl<T: Runtime> Client<T> {
-    /// Returns the genesis hash.
-    pub fn genesis(&self) -> &T::Hash {
-        &self.genesis_hash
-    }
-
-    /// Returns the chain metadata.
-    pub fn metadata(&self) -> &Metadata {
-        &self.metadata
-    }
-
-    /// Returns the system properties
-    pub fn properties(&self) -> &SystemProperties {
-        &self.properties
-    }
-
-    /// Fetch the value under an unhashed storage key
-    pub async fn fetch_unhashed<V: Decode>(
-        &self,
-        key: StorageKey,
-        hash: Option<T::Hash>,
-    ) -> Result<Option<V>, Error> {
-        if let Some(data) = self.rpc.storage(&key, hash).await? {
-            Ok(Some(Decode::decode(&mut &data.0[..])?))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Fetch a StorageKey with an optional block hash.
-    pub async fn fetch<F: Store<T>>(
-        &self,
-        store: &F,
-        hash: Option<T::Hash>,
-    ) -> Result<Option<F::Returns>, Error> {
-        let key = store.key(&self.metadata)?;
-        self.fetch_unhashed::<F::Returns>(key, hash).await
-    }
-
-    /// Fetch a StorageKey that has a default value with an optional block hash.
-    pub async fn fetch_or_default<F: Store<T>>(
-        &self,
-        store: &F,
-        hash: Option<T::Hash>,
-    ) -> Result<F::Returns, Error> {
-        if let Some(data) = self.fetch(store, hash).await? {
-            Ok(data)
-        } else {
-            Ok(store.default(&self.metadata)?)
-        }
-    }
-
-    /// Returns an iterator of key value pairs.
-    pub async fn iter<F: Store<T>>(
-        &self,
-        hash: Option<T::Hash>,
-    ) -> Result<KeyIter<T, F>, Error> {
-        let hash = if let Some(hash) = hash {
-            hash
-        } else {
-            self.block_hash(None)
-                .await?
-                .expect("didn't pass a block number; qed")
-        };
-        Ok(KeyIter {
-            client: self.clone(),
-            hash,
-            count: self.page_size,
-            start_key: None,
-            buffer: Default::default(),
-            _marker: PhantomData,
-        })
-    }
-
-    /// Fetch up to `count` keys for a storage map in lexicographic order.
-    ///
-    /// Supports pagination by passing a value to `start_key`.
-    pub async fn fetch_keys<F: Store<T>>(
-        &self,
-        count: u32,
-        start_key: Option<StorageKey>,
-        hash: Option<T::Hash>,
-    ) -> Result<Vec<StorageKey>, Error> {
-        let prefix = <F as Store<T>>::prefix(&self.metadata)?;
-        let keys = self
-            .rpc
-            .storage_keys_paged(Some(prefix), count, start_key, hash)
-            .await?;
-        Ok(keys)
-    }
-
-    /// Query historical storage entries
-    pub async fn query_storage(
-        &self,
-        keys: Vec<StorageKey>,
-        from: T::Hash,
-        to: Option<T::Hash>,
-    ) -> Result<Vec<StorageChangeSet<<T as System>::Hash>>, Error> {
-        self.rpc.query_storage(keys, from, to).await
-    }
-
-    /// Get a header
-    pub async fn header<H>(&self, hash: Option<H>) -> Result<Option<T::Header>, Error>
-    where
-        H: Into<T::Hash> + 'static,
-    {
-        let header = self.rpc.header(hash.map(|h| h.into())).await?;
-        Ok(header)
-    }
-
-    /// Get a block hash. By default returns the latest block hash
-    pub async fn block_hash(
-        &self,
-        block_number: Option<BlockNumber>,
-    ) -> Result<Option<T::Hash>, Error> {
-        let hash = self.rpc.block_hash(block_number).await?;
-        Ok(hash)
-    }
-
-    /// Get a block hash of the latest finalized block
-    pub async fn finalized_head(&self) -> Result<T::Hash, Error> {
-        let head = self.rpc.finalized_head().await?;
-        Ok(head)
-    }
-
-    /// Get a block
-    pub async fn block<H>(&self, hash: Option<H>) -> Result<Option<ChainBlock<T>>, Error>
-    where
-        H: Into<T::Hash> + 'static,
-    {
-        let block = self.rpc.block(hash.map(|h| h.into())).await?;
-        Ok(block)
-    }
-
-    /// Get proof of storage entries at a specific block's state.
-    pub async fn read_proof<H>(
-        &self,
-        keys: Vec<StorageKey>,
-        hash: Option<H>,
-    ) -> Result<ReadProof<T::Hash>, Error>
-    where
-        H: Into<T::Hash> + 'static,
-    {
-        let proof = self.rpc.read_proof(keys, hash.map(|h| h.into())).await?;
-        Ok(proof)
-    }
-
-    /// Subscribe to events.
-    pub async fn subscribe_events(
-        &self,
-    ) -> Result<Subscription<StorageChangeSet<T::Hash>>, Error> {
-        let events = self.rpc.subscribe_events().await?;
-        Ok(events)
-    }
-
-    /// Subscribe to new blocks.
-    pub async fn subscribe_blocks(&self) -> Result<Subscription<T::Header>, Error> {
-        let headers = self.rpc.subscribe_blocks().await?;
-        Ok(headers)
-    }
-
-    /// Subscribe to finalized blocks.
-    pub async fn subscribe_finalized_blocks(
-        &self,
-    ) -> Result<Subscription<T::Header>, Error> {
-        let headers = self.rpc.subscribe_finalized_blocks().await?;
-        Ok(headers)
-    }
-
-    /// Encodes a call.
-    pub fn encode<C: Call<T>>(&self, call: C) -> Result<Encoded, Error> {
-        Ok(self
-            .metadata()
-            .module_with_calls(C::MODULE)
-            .and_then(|module| module.call(C::FUNCTION, call))?)
-    }
-
-    /// Creates an unsigned extrinsic.
-    pub fn create_unsigned<C: Call<T> + Send + Sync>(
-        &self,
-        call: C,
-    ) -> Result<UncheckedExtrinsic<T>, Error> {
-        let call = self.encode(call)?;
-        Ok(extrinsic::create_unsigned::<T>(call))
-    }
-
-    /// Creates a signed extrinsic.
-    pub async fn create_signed<C: Call<T> + Send + Sync>(
-        &self,
-        call: C,
-        signer: &(dyn Signer<T> + Send + Sync),
-    ) -> Result<UncheckedExtrinsic<T>, Error>
-    where
-        <<T::Extra as SignedExtra<T>>::Extra as SignedExtension>::AdditionalSigned:
-            Send + Sync,
-    {
-        let account_nonce = if let Some(nonce) = signer.nonce() {
-            nonce
-        } else {
-            self.account(signer.account_id(), None).await?.nonce
-        };
-        let call = self.encode(call)?;
-        let signed = extrinsic::create_signed(
-            &self.runtime_version,
-            self.genesis_hash,
-            account_nonce,
-            call,
-            signer,
-        )
-        .await?;
-        Ok(signed)
-    }
-
-    /// Returns the events decoder.
-    pub fn events_decoder(&self) -> &EventsDecoder<T> {
-        &self.events_decoder
-    }
-
-    /// Create and submit an extrinsic and return corresponding Hash if successful
-    pub async fn submit_extrinsic(
-        &self,
-        extrinsic: UncheckedExtrinsic<T>,
-    ) -> Result<T::Hash, Error> {
-        self.rpc.submit_extrinsic(extrinsic).await
-    }
-
-    /// Create and submit an extrinsic and return corresponding Event if successful
-    pub async fn submit_and_watch_extrinsic(
-        &self,
-        extrinsic: UncheckedExtrinsic<T>,
-    ) -> Result<ExtrinsicSuccess<T>, Error> {
-        self.rpc
-            .submit_and_watch_extrinsic(extrinsic, &self.events_decoder)
-            .await
-    }
-
-    /// Submits a transaction to the chain.
-    pub async fn submit<C: Call<T> + Send + Sync>(
-        &self,
-        call: C,
-        signer: &(dyn Signer<T> + Send + Sync),
-    ) -> Result<T::Hash, Error>
-    where
-        <<T::Extra as SignedExtra<T>>::Extra as SignedExtension>::AdditionalSigned:
-            Send + Sync,
-    {
-        let extrinsic = self.create_signed(call, signer).await?;
-        self.submit_extrinsic(extrinsic).await
-    }
-
-    /// Submits transaction to the chain and watch for events.
-    pub async fn watch<C: Call<T> + Send + Sync>(
-        &self,
-        call: C,
-        signer: &(dyn Signer<T> + Send + Sync),
-    ) -> Result<ExtrinsicSuccess<T>, Error>
-    where
-        <<T::Extra as SignedExtra<T>>::Extra as SignedExtension>::AdditionalSigned:
-            Send + Sync,
-    {
-        let extrinsic = self.create_signed(call, signer).await?;
-        self.submit_and_watch_extrinsic(extrinsic).await
-    }
-
-    /// Insert a key into the keystore.
-    pub async fn insert_key(
-        &self,
-        key_type: String,
-        suri: String,
-        public: Bytes,
-    ) -> Result<(), Error> {
-        self.rpc.insert_key(key_type, suri, public).await
-    }
-
-    /// Generate new session keys and returns the corresponding public keys.
-    pub async fn rotate_keys(&self) -> Result<Bytes, Error> {
-        self.rpc.rotate_keys().await
-    }
-
-    /// Checks if the keystore has private keys for the given session public keys.
-    ///
-    /// `session_keys` is the SCALE encoded session keys object from the runtime.
-    ///
-    /// Returns `true` iff all private keys could be found.
-    pub async fn has_session_keys(&self, session_keys: Bytes) -> Result<bool, Error> {
-        self.rpc.has_session_keys(session_keys).await
-    }
-
-    /// Checks if the keystore has private keys for the given public key and key type.
-    ///
-    /// Returns `true` if a private key could be found.
-    pub async fn has_key(
-        &self,
-        public_key: Bytes,
-        key_type: String,
-    ) -> Result<bool, Error> {
-        self.rpc.has_key(public_key, key_type).await
-    }
+/// A phase of a block's execution.
+#[derive(Clone, Debug, Eq, PartialEq, Decode)]
+pub enum Phase {
+    /// Applying an extrinsic.
+    ApplyExtrinsic(u32),
+    /// Finalizing the block.
+    Finalization,
+    /// Initializing the block.
+    Initialization,
 }
 
 /// Wraps an already encoded byte vector, prevents being encoded as a raw byte vector as part of
@@ -614,188 +306,5 @@ pub struct Encoded(pub Vec<u8>);
 impl codec::Encode for Encoded {
     fn encode(&self) -> Vec<u8> {
         self.0.to_owned()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sp_core::storage::{
-        well_known_keys,
-        StorageKey,
-    };
-    use sp_keyring::AccountKeyring;
-    use substrate_subxt_client::{
-        DatabaseConfig,
-        KeystoreConfig,
-        Role,
-        SubxtClient,
-        SubxtClientConfig,
-    };
-    use tempdir::TempDir;
-
-    pub(crate) type TestRuntime = crate::NodeTemplateRuntime;
-
-    pub(crate) async fn test_client_with(
-        key: AccountKeyring,
-    ) -> (Client<TestRuntime>, TempDir) {
-        env_logger::try_init().ok();
-        let tmp = TempDir::new("subxt-").expect("failed to create tempdir");
-        let config = SubxtClientConfig {
-            impl_name: "substrate-subxt-full-client",
-            impl_version: "0.0.1",
-            author: "substrate subxt",
-            copyright_start_year: 2020,
-            db: DatabaseConfig::RocksDb {
-                path: tmp.path().join("db"),
-                cache_size: 128,
-            },
-            keystore: KeystoreConfig::Path {
-                path: tmp.path().join("keystore"),
-                password: None,
-            },
-            chain_spec: test_node::chain_spec::development_config().unwrap(),
-            role: Role::Authority(key),
-            telemetry: None,
-        };
-        let client = ClientBuilder::new()
-            .set_client(
-                SubxtClient::from_config(config, test_node::service::new_full)
-                    .expect("Error creating subxt client"),
-            )
-            .set_page_size(3)
-            .build()
-            .await
-            .expect("Error creating client");
-        (client, tmp)
-    }
-
-    pub(crate) async fn test_client() -> (Client<TestRuntime>, TempDir) {
-        test_client_with(AccountKeyring::Alice).await
-    }
-
-    #[async_std::test]
-    async fn test_insert_key() {
-        // Bob is not an authority, so block production should be disabled.
-        let (client, _tmp) = test_client_with(AccountKeyring::Bob).await;
-        let mut blocks = client.subscribe_blocks().await.unwrap();
-        // get the genesis block.
-        assert_eq!(blocks.next().await.number, 0);
-        let public = AccountKeyring::Alice.public().as_array_ref().to_vec();
-        client
-            .insert_key(
-                "aura".to_string(),
-                "//Alice".to_string(),
-                public.clone().into(),
-            )
-            .await
-            .unwrap();
-        assert!(client
-            .has_key(public.clone().into(), "aura".to_string())
-            .await
-            .unwrap());
-        // Alice is an authority, so blocks should be produced.
-        assert_eq!(blocks.next().await.number, 1);
-    }
-
-    #[async_std::test]
-    async fn test_tx_transfer_balance() {
-        let mut signer = PairSigner::new(AccountKeyring::Alice.pair());
-        let dest = AccountKeyring::Bob.to_account_id().into();
-
-        let (client, _) = test_client().await;
-        let nonce = client
-            .account(&AccountKeyring::Alice.to_account_id(), None)
-            .await
-            .unwrap()
-            .nonce;
-        signer.set_nonce(nonce);
-        client
-            .submit(
-                balances::TransferCall {
-                    to: &dest,
-                    amount: 10_000,
-                },
-                &signer,
-            )
-            .await
-            .unwrap();
-
-        // check that nonce is handled correctly
-        signer.increment_nonce();
-        client
-            .submit(
-                balances::TransferCall {
-                    to: &dest,
-                    amount: 10_000,
-                },
-                &signer,
-            )
-            .await
-            .unwrap();
-    }
-
-    #[async_std::test]
-    async fn test_getting_hash() {
-        let (client, _) = test_client().await;
-        client.block_hash(None).await.unwrap();
-    }
-
-    #[async_std::test]
-    async fn test_getting_block() {
-        let (client, _) = test_client().await;
-        let block_hash = client.block_hash(None).await.unwrap();
-        client.block(block_hash).await.unwrap();
-    }
-
-    #[async_std::test]
-    async fn test_getting_read_proof() {
-        let (client, _) = test_client().await;
-        let block_hash = client.block_hash(None).await.unwrap();
-        client
-            .read_proof(
-                vec![
-                    StorageKey(well_known_keys::HEAP_PAGES.to_vec()),
-                    StorageKey(well_known_keys::EXTRINSIC_INDEX.to_vec()),
-                ],
-                block_hash,
-            )
-            .await
-            .unwrap();
-    }
-
-    #[async_std::test]
-    async fn test_chain_subscribe_blocks() {
-        let (client, _) = test_client().await;
-        let mut blocks = client.subscribe_blocks().await.unwrap();
-        blocks.next().await;
-    }
-
-    #[async_std::test]
-    async fn test_chain_subscribe_finalized_blocks() {
-        let (client, _) = test_client().await;
-        let mut blocks = client.subscribe_finalized_blocks().await.unwrap();
-        blocks.next().await;
-    }
-
-    #[async_std::test]
-    async fn test_fetch_keys() {
-        let (client, _) = test_client().await;
-        let keys = client
-            .fetch_keys::<system::AccountStore<_>>(4, None, None)
-            .await
-            .unwrap();
-        assert_eq!(keys.len(), 4)
-    }
-
-    #[async_std::test]
-    async fn test_iter() {
-        let (client, _) = test_client().await;
-        let mut iter = client.iter::<system::AccountStore<_>>(None).await.unwrap();
-        let mut i = 0;
-        while let Some(_) = iter.next().await.unwrap() {
-            i += 1;
-        }
-        assert_eq!(i, 4);
     }
 }
